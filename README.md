@@ -2,6 +2,11 @@
 
 Servicio Java 21 / Spring Boot que materializa eventos en MongoDB y responde consultas solo contra el modelo de lectura. No debe consultar los cuatro módulos al atender una consulta.
 
+🧩 Link al despliegue en Render
+- [https://donatrack-servicio-consultas.onrender.com](https://donatrack-servicio-consultas.onrender.com)
+
+- Healht: https://donatrack-servicio-consultas.onrender.com/actuator/health
+
 ## Endpoints
 
 - `GET /consultas/estado`: estado básico y colecciones `rm_*`.
