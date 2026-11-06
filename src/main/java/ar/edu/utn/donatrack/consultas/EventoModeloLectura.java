@@ -10,5 +10,6 @@ public record EventoModeloLectura(
     String resourceId,
     String operation,
     Instant occurredAt,
-    Map<String, Object> payload
-) {}
+    Map<String, Object> payload,
+    Long version,
+    Integer schemaVersion) {}
