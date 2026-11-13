@@ -59,6 +59,7 @@ public class ConsultaController {
     String collection = collection(tipo);
     Aggregation pipeline =
         Aggregation.newAggregation(
+            Aggregation.match(Criteria.where("eliminado").ne(true)),
             Aggregation.group("estado").count().as("cantidad"),
             Aggregation.project("cantidad").and("_id").as("estado"));
     AggregationResults<Document> results = mongo.aggregate(pipeline, collection, Document.class);

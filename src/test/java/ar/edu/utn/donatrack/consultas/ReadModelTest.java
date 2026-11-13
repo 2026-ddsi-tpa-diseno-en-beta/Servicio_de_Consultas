@@ -14,6 +14,106 @@ import org.springframework.data.mongodb.core.MongoTemplate;
 /** Executes Mongo wire operations against an isolated in-memory Mongo-compatible server. */
 class ReadModelTest {
   @Test
+  void completeDeletesArrivingFirstKeepDeliveredHistoryWithoutResurrectingResources() {
+    consumer.consumir(
+        event(
+            "necesidad", "n", 100, "DELETE",
+            Map.of("entidadID", "e", "productoSolicitadoID", "p", "cantidadObjetivo", 20)));
+    consumer.consumir(
+        event("entidad", "e", 100, "DELETE", Map.of("razonSocial", "Escuela histórica")));
+    // The former UPSERTs arrive later through a different delivery/replay order.
+    fixture();
+
+    assertTrue(new SnapshotStore(mongo).get("necesidad", "n").isEmpty());
+    assertTrue(new SnapshotStore(mongo).get("entidad", "e").isEmpty());
+    assertTrue(reports.needs(null, null, null, null, 100).isEmpty());
+    assertDeliveredHistory("Escuela histórica");
+    assertEquals(1, reports.depots("z", null, null).getFirst().get("cantidadEntidadesAtendidas"));
+
+    projections.rebuild();
+    assertDeliveredHistory("Escuela histórica");
+    assertEquals(1, reports.depots("z", null, null).getFirst().get("cantidadEntidadesAtendidas"));
+    assertTrue(new SnapshotStore(mongo).get("necesidad", "n").isEmpty());
+  }
+
+  @Test
+  void completeDeleteCarriesNewerMetadataThanAnExistingSnapshot() {
+    fixture();
+    consumer.consumir(
+        event("entidad", "e", 100, "DELETE", Map.of("razonSocial", "Nombre al eliminar")));
+    consumer.consumir(
+        event("entidad", "e", 99, "UPSERT", Map.of("razonSocial", "Nombre intermedio")));
+    assertDeliveredHistory("Nombre al eliminar");
+    assertTrue(new SnapshotStore(mongo).get("entidad", "e").isEmpty());
+    assertEquals(100L, new SnapshotStore(mongo).historical("entidad", "e").get("version"));
+  }
+
+  private void assertDeliveredHistory(String entityName) {
+    var beneficiaries = ProjectionService.list(reports.donor("d"), "entidadesBeneficiadas");
+    assertEquals(1, beneficiaries.size());
+    assertEquals("e", beneficiaries.getFirst().get("entidadID"));
+    assertEquals(entityName, beneficiaries.getFirst().get("razonSocial"));
+    assertEquals(10L, beneficiaries.getFirst().get("unidades"));
+  }
+
+  @Test
+  void genericStateStatisticsCountOnlyLiveResources() {
+    fixture();
+    consumer.consumir(event("donador", "d", 100, "DELETE", Map.of()));
+    var queries = new ConsultaController(mongo);
+    assertTrue(queries.listar("donador", 100).isEmpty());
+    assertTrue(queries.agruparPorTipo("donador").isEmpty());
+
+    up("donador", "d2", Map.of("nombre", "Donador activo", "estado", "VERIFICADO"));
+    var states = queries.agruparPorTipo("donador");
+    assertEquals(1, states.size());
+    assertEquals("VERIFICADO", states.getFirst().get("estado"));
+    assertEquals(1L, ((Number) states.getFirst().get("cantidad")).longValue());
+  }
+
+  @Test
+  void invalidDonationCannotReplaceGoodDataOrPoisonLaterValidEvents() {
+    fixture();
+    Document previous = new SnapshotStore(mongo).get("donacion", "x");
+    var invalid = event("donacion", "x", 100, "UPSERT", Map.of("donadorID", "d"));
+    assertThrows(IllegalArgumentException.class, () -> consumer.consumir(invalid));
+    assertEquals(previous, new SnapshotStore(mongo).get("donacion", "x"));
+    assertNull(mongo.getCollection("read_model_processed_events")
+        .find(new Document("_id", invalid.get("eventId"))).first());
+
+    var missing = event("donacion", "invalid-new", 101, "UPSERT", Map.of("donadorID", "d"));
+    assertThrows(IllegalArgumentException.class, () -> consumer.consumir(missing));
+    assertTrue(new SnapshotStore(mongo).get("donacion", "invalid-new").isEmpty());
+    assertDoesNotThrow(() -> up("donador", "d", Map.of("nombre", "Nombre actualizado", "estado", "VERIFICADO")));
+    assertEquals("Nombre actualizado", reports.donor("d").get("nombre"));
+    assertEquals(2, reports.donor("d").get("cantidadDonaciones"));
+  }
+
+  @Test
+  void invalidDatesAndCompletedHistoryAreRejectedBeforeSnapshotWrites() {
+    fixture();
+    var invalidDonation = new LinkedHashMap<>(new SnapshotStore(mongo).get("donacion", "x"));
+    invalidDonation.put("fechaIngreso", "fecha inválida");
+    assertThrows(IllegalArgumentException.class,
+        () -> consumer.consumir(event("donacion", "x", 100, "UPSERT", invalidDonation)));
+    var invalidAssignment = new LinkedHashMap<>(new SnapshotStore(mongo).get("asignacion", "a"));
+    invalidAssignment.put("historial", List.of(Map.of("estado", "COMPLETADA")));
+    assertThrows(IllegalArgumentException.class,
+        () -> consumer.consumir(event("asignacion", "a", 100, "UPSERT", invalidAssignment)));
+    assertEquals(3600.0,
+        ((Number) reports.depots("z", null, null).getFirst().get("tiempoPromedioEntregaSegundos")).doubleValue());
+  }
+
+  @Test
+  void staleIncompleteSnapshotIsIgnoredWithoutRegressingCurrentData() {
+    fixture();
+    assertDoesNotThrow(
+        () -> consumer.consumir(event("donacion", "x", 1, "UPSERT", Map.of())));
+    assertEquals("CONQUEJA", new SnapshotStore(mongo).get("donacion", "x").get("estado"));
+    assertDeliveredHistory("Escuela");
+  }
+
+  @Test
   void entityRenameRefreshesDeliveredHistoryAfterNeedDeletion() {
     fixture();
     consumer.consumir(event("necesidad", "n", ++sequence, "DELETE", Map.of()));

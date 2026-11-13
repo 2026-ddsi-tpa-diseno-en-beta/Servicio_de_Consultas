@@ -6,9 +6,13 @@ Los cuatro módulos son dueños de sus datos. Cada cambio genera un snapshot en 
 
 Se conserva el origen y la versión por recurso. Cada tipo tiene un único módulo dueño. Un borrado deja un tombstone: mensajes viejos no pueden revivir el recurso ni eliminar una versión nueva. La entrega del broker es al menos una vez; el consumidor es idempotente. No hay transacción distribuida entre PostgreSQL, RabbitMQ y MongoDB.
 
+Las bajas de necesidades y entidades incluyen su último snapshot completo, capturado antes de eliminarlo en el módulo dueño. Así se conservan la entidad beneficiada y su nombre aunque el `DELETE` llegue antes del primer `UPSERT`. Un `DELETE` nuevo combina esa información con la que ya hubiera en Mongo; los campos del evento nuevo prevalecen. Las bajas antiguas con payload vacío siguen conservando la historia ya recibida, pero no permiten recuperar datos históricos que nunca llegaron.
+
 Para migrar el prototipo existente, un snapshot sin `version` puede ser reemplazado por el primer evento versionado aunque su etiqueta `fuente` anterior fuera genérica. Luego no se permiten cambios de fuente. No hace falta cambiar la URI de MongoDB por esta migración.
 
 La actualización del snapshot y sus reportes no es una única transacción Mongo. El evento solo se marca procesado después de terminar las proyecciones. Si falla, el reintento reconstruye desde el snapshot vigente. Pueden observarse estados intermedios mientras se aplica un cambio: consistencia eventual.
+
+Antes de sustituir un snapshot vigente se verifica la forma técnica de los campos críticos usados por las proyecciones: estado textual en donaciones/asignaciones y fechas ISO de ingreso/entrega. Un evento nuevo incompatible se rechaza sin reemplazar el snapshot válido ni marcarse procesado. Un evento viejo se sigue ignorando por versión. Las reglas de negocio y los estados permitidos pertenecen a los módulos dueños; esta validación no los recalcula. No hay una migración automática de snapshots inválidos previos: deben corregirse desde su fuente con un evento válido de versión nueva.
 
 ## Contrato versión 1
 
@@ -53,3 +57,5 @@ Los endpoints se exponen por el gateway con prefijo `/api/consultas`. Las lectur
 5. Ante errores, revisar la DLQ y la causa antes de reenviar. No purgar mensajes para que desaparezca el indicador.
 
 El materializador se opera como una réplica con un consumidor serial en esta entrega. Para escalar a múltiples réplicas se requiere particionar por agregado o coordinar las proyecciones. También corresponde definir retención del outbox enviado y del registro de deduplicación según el período de replay acordado.
+
+La reconstrucción administrativa trabaja sobre las colecciones `q_*` activas: durante su ejecución las lecturas pueden ver resultados parciales. Si se interrumpe, repetir la reconstrucción y verificar los cuatro reportes antes de usar el entorno. Reenviar un evento cuyo `eventId` ya está procesado no repone por sí solo una proyección borrada por esa reconstrucción. El cambio a reconstrucciones por generaciones queda como mejora posterior; no se promete un reemplazo atómico de todas las vistas.
