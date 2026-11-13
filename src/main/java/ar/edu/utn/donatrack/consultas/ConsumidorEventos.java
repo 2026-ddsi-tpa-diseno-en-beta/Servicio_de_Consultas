@@ -27,6 +27,7 @@ public class ConsumidorEventos {
   public synchronized void consumir(Map<String, Object> raw) {
     EventoModeloLectura e = mapper.convertValue(raw, EventoModeloLectura.class);
     if (e.eventId() == null
+        || e.eventId().isBlank()
         || e.source() == null
         || e.source().isBlank()
         || e.resourceType() == null
@@ -47,10 +48,19 @@ public class ConsumidorEventos {
         mongo.getCollection(collection).find(new Document("_id", e.resourceId())).first();
     if (current != null && current.containsKey("version") && !Objects.equals(current.getString("fuente"), e.source()))
       throw new IllegalArgumentException("Fuente del recurso inconsistente");
+    // A DELETE may be the first event received, or carry newer historical metadata
+    // than our previous snapshot. Empty legacy DELETE payloads still retain history.
     Document data =
         e.operation().equals("DELETE") && current != null
             ? new Document(current)
-            : new Document(e.payload());
+            : new Document();
+    data.putAll(e.payload());
+    boolean advancesSnapshot =
+        current == null
+            || !(current.get("version") instanceof Number version)
+            || version.longValue() < e.version();
+    if (advancesSnapshot && e.operation().equals("UPSERT"))
+      SnapshotValidator.validate(e.resourceType(), data);
     for (String key : List.of("_id", "version", "fuente", "eliminado", "ultimaActualizacion"))
       data.remove(key);
     data.put("version", e.version());
